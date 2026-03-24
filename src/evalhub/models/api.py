@@ -4,7 +4,13 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+OCI_ARTIFACT_TYPE = "application/vnd.eval-hub.github.io"
+
+OCI_ANNOTATION_JOB_ID = "io.github.eval-hub.job_id"
+OCI_ANNOTATION_BENCHMARK_ID = "io.github.eval-hub.benchmark_id"
+OCI_ANNOTATION_PROVIDER_ID = "io.github.eval-hub.provider_id"
 
 
 class JobStatus(str, Enum):
@@ -29,31 +35,45 @@ class EvaluationStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
+class ErrorInfo(BaseModel):
+    """Error information with message and code.
+
+    Matches the MessageInfo structure from eval-hub API.
+    """
+
+    message: str = Field(..., description="Error message")
+    message_code: str = Field(..., description="Error code identifier")
+
+
+class ModelAuth(BaseModel):
+    """Authentication configuration for the model endpoint."""
+
+    secret_ref: str = Field(
+        ..., description="Kubernetes Secret name containing model credentials"
+    )
+
+    @field_validator("secret_ref")
+    @classmethod
+    def validate_secret_ref(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("secret_ref cannot be empty")
+        return cleaned
+
+
 class ModelConfig(BaseModel):
     """Configuration for the model being evaluated.
 
-    This matches the eval-hub API's Model schema which expects:
+    This matches the eval-hub API's ModelRef schema:
     - url: The model endpoint URL (e.g., vLLM, OpenAI-compatible endpoint)
     - name: Model name/identifier
-
-    Additional fields like provider, parameters, etc. can be passed via extra fields
-    since extra="allow" is set.
+    - auth: Optional model authentication (secret_ref)
     """
-
-    model_config = ConfigDict(extra="allow")
 
     url: str = Field(..., description="Model endpoint URL")
     name: str = Field(..., description="Model name or identifier")
-    # Common optional fields (also accepted as extras)
-    provider: str | None = Field(default=None, description="Model provider (optional)")
-    parameters: dict[str, Any] = Field(
-        default_factory=dict, description="Model generation parameters (optional)"
-    )
-    device: str | None = Field(
-        default=None, description="Device placement hint (optional)"
-    )
-    batch_size: int | None = Field(
-        default=None, description="Batch size hint (optional)"
+    auth: ModelAuth | None = Field(
+        default=None, description="Authentication configuration for the model endpoint"
     )
 
     @field_validator("name")
@@ -86,8 +106,9 @@ class BenchmarkInfo(BaseModel):
     supports_few_shot: bool = Field(
         default=True, description="Whether benchmark supports few-shot evaluation"
     )
-    default_few_shot: int | None = Field(
-        default=None, description="Default number of few-shot examples"
+    num_few_shot: int | None = Field(
+        default=None,
+        description="Default number of few-shot examples",
     )
     custom_config_schema: dict[str, Any] | None = Field(
         default=None, description="JSON schema for custom benchmark configuration"
@@ -99,40 +120,6 @@ class BenchmarkInfo(BaseModel):
         if not v.strip():
             raise ValueError("String fields cannot be empty")
         return v
-
-
-class EvaluationRequest(BaseModel):
-    """Request to run an evaluation."""
-
-    benchmark_id: str = Field(..., description="Benchmark to evaluate on")
-    model: ModelConfig = Field(..., description="Model configuration")
-
-    # Evaluation parameters
-    num_examples: int | None = Field(
-        default=None, description="Number of examples to evaluate (None = all)"
-    )
-    num_few_shot: int | None = Field(
-        default=None, description="Number of few-shot examples"
-    )
-    random_seed: int | None = Field(
-        default=42, description="Random seed for reproducibility"
-    )
-
-    # Custom benchmark configuration
-    benchmark_config: dict[str, Any] = Field(
-        default_factory=dict, description="Benchmark-specific configuration"
-    )
-
-    # Job metadata
-    experiment_name: str | None = Field(
-        default=None, description="Name for this evaluation experiment"
-    )
-    tags: dict[str, str] = Field(
-        default_factory=dict, description="Custom tags for the job"
-    )
-    priority: int = Field(
-        default=0, description="Job priority (higher = more priority)"
-    )
 
 
 class EvaluationResult(BaseModel):
@@ -156,69 +143,233 @@ class EvaluationResult(BaseModel):
     )
 
 
-class EvaluationJob(BaseModel):
-    """Evaluation job information."""
+class MessageInfo(BaseModel):
+    """Message information with code."""
 
-    model_config = ConfigDict(populate_by_name=True)
+    message: str = Field(..., description="Message text")
+    message_code: str = Field(..., description="Message code")
 
-    id: str = Field(..., description="Unique job identifier", alias="job_id")
-    status: JobStatus = Field(..., description="Current job status")
-    evaluation_status: EvaluationStatus | None = Field(
-        default=None, description="Detailed evaluation status"
+
+class EvaluationJobResource(BaseModel):
+    """Resource information for an evaluation job."""
+
+    id: str = Field(..., description="Unique job identifier")
+    tenant: str | None = Field(default=None, description="Tenant identifier")
+    created_at: datetime = Field(..., description="When the job was created")
+    updated_at: datetime | None = Field(
+        default=None, description="When the job was last updated"
     )
+    mlflow_experiment_id: str | None = Field(
+        default=None, description="MLFlow experiment ID"
+    )
+    message: MessageInfo | None = Field(default=None, description="Status message")
 
-    # Request information
-    request: EvaluationRequest = Field(..., description="Original evaluation request")
 
-    # Timing information
-    submitted_at: datetime = Field(..., description="When the job was submitted")
+class EvaluationJobState(BaseModel):
+    """State information for an evaluation job."""
+
+    state: str = Field(..., description="Job state")
+    message: MessageInfo | None = Field(default=None, description="State message")
+
+
+class BenchmarkStatus(BaseModel):
+    """Status of a benchmark in an evaluation job."""
+
+    id: str = Field(..., description="Benchmark identifier")
+    provider_id: str = Field(..., description="Provider identifier")
+    benchmark_index: int | None = Field(default=None, description="Benchmark index")
+    status: JobStatus = Field(..., description="Benchmark status")
+    error_message: MessageInfo | None = Field(default=None, description="Error message")
     started_at: datetime | None = Field(
-        default=None, description="When evaluation started"
+        default=None, description="When benchmark started"
     )
     completed_at: datetime | None = Field(
-        default=None, description="When evaluation completed"
+        default=None, description="When benchmark completed"
     )
 
-    # Progress information
-    progress: float | None = Field(
-        default=None, description="Progress percentage (0.0 to 1.0)"
-    )
-    current_step: str | None = Field(
-        default=None, description="Current step description"
-    )
-    total_steps: int | None = Field(default=None, description="Total number of steps")
-    completed_steps: int | None = Field(
-        default=None, description="Number of completed steps"
+    # Convenience property for consistency with job state
+    @property
+    def state(self) -> JobStatus:
+        """Get benchmark state (alias for status)."""
+        return self.status
+
+
+class EvaluationJobStatus(BaseModel):
+    """Status information for an evaluation job."""
+
+    state: JobStatus = Field(..., description="Job state")
+    message: MessageInfo | None = Field(default=None, description="Status message")
+    benchmarks: list[BenchmarkStatus] = Field(
+        default_factory=list, description="Benchmark statuses"
     )
 
-    # Error information
-    error_message: str | None = Field(
-        default=None, description="Error message if failed"
+
+class BenchmarkResult(BaseModel):
+    """Results from a single benchmark evaluation."""
+
+    id: str = Field(..., description="Benchmark identifier")
+    provider_id: str = Field(..., description="Provider identifier")
+    benchmark_index: int | None = Field(default=None, description="Benchmark index")
+    metrics: dict[str, Any] = Field(
+        default_factory=dict, description="Benchmark metrics"
     )
-    error_details: dict[str, Any] | None = Field(
-        default=None, description="Detailed error information"
+    artifacts: dict[str, Any] = Field(
+        default_factory=dict, description="Benchmark artifacts"
+    )
+    mlflow_run_id: str | None = Field(
+        default=None, description="MLFlow run ID if tracking enabled"
+    )
+    logs_path: str | None = Field(default=None, description="Path to evaluation logs")
+
+
+class EvaluationJobResults(BaseModel):
+    """Results from an evaluation job."""
+
+    benchmarks: list[BenchmarkResult] = Field(
+        default_factory=list, description="Benchmark results"
+    )
+    mlflow_experiment_url: str | None = Field(
+        default=None, description="MLFlow experiment URL if tracking enabled"
     )
 
-    # Resource usage
-    estimated_duration: int | None = Field(
-        default=None, description="Estimated duration in seconds"
+
+class BenchmarkConfig(BaseModel):
+    """Benchmark configuration for job submission."""
+
+    id: str = Field(..., description="Benchmark identifier")
+    provider_id: str = Field(..., description="Provider identifier")
+    parameters: dict[str, Any] = Field(
+        default_factory=dict, description="Benchmark-specific parameters"
     )
-    actual_duration: int | None = Field(
-        default=None, description="Actual duration in seconds"
+
+
+class CollectionRef(BaseModel):
+    """Reference to a collection for job submission."""
+
+    id: str = Field(..., description="The unique identifier of the collection")
+    benchmarks: list[BenchmarkConfig] | None = Field(
+        default=None,
+        description="Optional subset of benchmarks from the collection",
     )
+
+
+class ExperimentTag(BaseModel):
+    """Tag on an experiment (e.g. MLFlow).
+
+    Matches the ExperimentTag schema from the eval-hub API.
+    """
+
+    key: str = Field(..., description="Tag key", max_length=250)
+    value: str = Field(..., description="Tag value", max_length=5000)
+
+
+class ExperimentConfig(BaseModel):
+    """Configuration for MLFlow experiment tracking.
+
+    When provided on a job submission, the evaluation job will be
+    tracked in MLFlow.
+
+    Matches the ExperimentConfig schema from the eval-hub API.
+    """
+
+    name: str | None = Field(default=None, description="Experiment name")
+    tags: list[ExperimentTag] = Field(
+        default_factory=list, description="Experiment tags", max_length=20
+    )
+    artifact_location: str | None = Field(
+        default=None, description="Artifact storage location"
+    )
+
+
+class JobSubmissionRequest(BaseModel):
+    """Request to submit an evaluation job.
+
+    Either ``benchmarks`` or ``collection`` must be provided, but not both.
+    """
+
+    name: str = Field(..., description="Name for the evaluation job")
+    description: str | None = Field(
+        default=None, description="The evaluation job description"
+    )
+    tags: list[str] = Field(default_factory=list, description="The evaluation job tags")
+    model: ModelConfig = Field(..., description="Model configuration")
+    benchmarks: list[BenchmarkConfig] | None = Field(
+        default=None, description="List of benchmarks to evaluate"
+    )
+    collection: CollectionRef | None = Field(
+        default=None, description="Collection reference for the evaluation job"
+    )
+    experiment: ExperimentConfig | None = Field(
+        default=None,
+        description="MLFlow experiment configuration. When provided, the evaluation job will be tracked in MLFlow.",
+    )
+
+    @model_validator(mode="after")
+    def check_benchmarks_or_collection(self) -> "JobSubmissionRequest":
+        if self.benchmarks and self.collection:
+            raise ValueError("Cannot specify both 'benchmarks' and 'collection'")
+        if not self.benchmarks and not self.collection:
+            raise ValueError("Must specify either 'benchmarks' or 'collection'")
+        return self
+
+
+class EvaluationJob(BaseModel):
+    """Evaluation job information from the API.
+
+    Matches EvaluationJobResource from the Go API.
+    """
+
+    resource: EvaluationJobResource = Field(..., description="Resource metadata")
+    status: EvaluationJobStatus | None = Field(
+        default=None, description="Job status information"
+    )
+    results: EvaluationJobResults | None = Field(
+        default=None, description="Job results"
+    )
+
+    # Embedded EvaluationJobConfig fields
+    name: str = Field(..., description="The evaluation job name")
+    description: str | None = Field(
+        default=None, description="The evaluation job description"
+    )
+    tags: list[str] = Field(default_factory=list, description="The evaluation job tags")
+    model: ModelConfig = Field(..., description="Model configuration")
+    benchmarks: list[BenchmarkConfig] | None = Field(
+        default=None, description="Benchmark configurations"
+    )
+    collection: CollectionRef | None = Field(
+        default=None, description="Collection reference for the evaluation job"
+    )
+    experiment: ExperimentConfig | None = Field(
+        default=None,
+        description="MLFlow experiment configuration",
+    )
+
+    # Convenience properties to access nested fields
+    @property
+    def id(self) -> str:
+        """Get job ID from resource."""
+        return self.resource.id
+
+    @property
+    def state(self) -> JobStatus:
+        """Get job state."""
+        return self.status.state if self.status else JobStatus.PENDING
 
 
 class JobsList(BaseModel):
     """List of evaluation jobs response."""
 
-    model_config = ConfigDict(populate_by_name=True)
-
-    total_count: int = Field(
-        ..., alias="total_jobs", description="Total number of jobs"
-    )
+    total_count: int = Field(..., description="Total number of jobs")
     items: list[EvaluationJob] = Field(
-        ..., alias="jobs", description="List of evaluation jobs"
+        default_factory=list, description="List of evaluation jobs"
     )
+
+    @field_validator("items", mode="before")
+    @classmethod
+    def handle_none_items(cls, v: list[EvaluationJob] | None) -> list[EvaluationJob]:
+        """Convert None to empty list for compatibility with server responses."""
+        return v if v is not None else []
 
 
 class EvaluationResponse(BaseModel):
@@ -247,23 +398,34 @@ class EvaluationResponse(BaseModel):
     duration_seconds: float = Field(..., description="Total evaluation time")
 
 
-class OCICoordinate(BaseModel):
+class OCICoordinates(BaseModel):
     """OCI artifact coordinates for persistence."""
 
-    oci_ref: str = Field(
-        ..., description="OCI reference (e.g., 'ghcr.io/org/repo:tag')"
+    oci_host: str = Field(
+        ..., description="OCI registry host (e.g., 'quay.io')", examples=["quay.io"]
+    )
+    oci_repository: str = Field(
+        ...,
+        description="OCI repository (e.g., 'my-org/my-repo')",
+        examples=["my-org/my-repo"],
+    )
+    oci_tag: str | None = Field(
+        default=None, description="OCI tag (e.g., 'eval-123')", examples=["eval-123"]
     )
     oci_subject: str | None = Field(
-        default=None, description="Optional OCI subject identifier"
+        default=None,
+        description="Optional OCI subject identifier (in same registry and repo)",
+        examples=["quay.io/my-org/my-repo:model"],
     )
-
-    model_config = ConfigDict(
-        json_schema_extra={
-            "example": {
-                "oci_ref": "ghcr.io/my-org/eval-results:latest",
-                "oci_subject": "not used atm",
+    annotations: dict[str, str] = Field(
+        default_factory=dict,
+        description="Custom annotations",
+        examples=[
+            {
+                "model": "quay.io/my-org/my-repo:model",
+                "some": "value",
             }
-        }
+        ],
     )
 
 
@@ -271,11 +433,9 @@ class EvaluationJobFilesLocation(BaseModel):
     """Files location for persisting as OCI artifacts for an evaluation job."""
 
     model_config = ConfigDict(
-        populate_by_name=True,
-        serialize_by_alias=True,
         json_schema_extra={
             "example": {
-                "job_id": "job_123",
+                "id": "job_123",
                 "path": "/tmp/lighteval_output/job_123",
                 "metadata": {
                     "framework": "lighteval",
@@ -285,7 +445,7 @@ class EvaluationJobFilesLocation(BaseModel):
         },
     )
 
-    id: str = Field(..., description="Job identifier", alias="job_id")
+    id: str = Field(..., description="Job identifier")
     path: str | None = Field(
         default=None,
         description="Directory path containing files to persist. None if no files to persist.",
@@ -300,11 +460,9 @@ class PersistResponse(BaseModel):
     """Response from OCI artifact persistence operation."""
 
     model_config = ConfigDict(
-        populate_by_name=True,
-        serialize_by_alias=True,
         json_schema_extra={
             "example": {
-                "job_id": "job_123",
+                "id": "job_123",
                 "oci_ref": "ghcr.io/org/repo:latest@sha256:abc123...",
                 "digest": "sha256:abc123...",
                 "files_count": 42,
@@ -313,7 +471,7 @@ class PersistResponse(BaseModel):
         },
     )
 
-    id: str = Field(..., description="Job identifier", alias="job_id")
+    id: str = Field(..., description="Job identifier")
     oci_ref: str = Field(..., description="Full OCI reference including digest")
     digest: str = Field(..., description="SHA256 digest of artifact")
     files_count: int = Field(..., description="Number of files persisted")
@@ -322,82 +480,101 @@ class PersistResponse(BaseModel):
     )
 
 
-class SupportedBenchmark(BaseModel):
-    """Reference to a supported benchmark."""
+class Resource(BaseModel):
+    """Resource metadata."""
 
-    id: str = Field(..., description="Benchmark identifier")
+    id: str = Field(..., description="Resource identifier")
+    tenant: str | None = Field(default=None, description="Tenant identifier")
+    created_at: datetime | None = Field(default=None, description="Creation timestamp")
+    updated_at: datetime | None = Field(
+        default=None, description="Last update timestamp"
+    )
+    read_only: bool | None = Field(
+        default=None, description="Whether the resource is read-only"
+    )
+    owner: str | None = Field(default=None, description="Resource owner")
+
+
+class PrimaryScore(BaseModel):
+    """Primary score configuration for a benchmark."""
+
+    metric: str = Field(..., description="Metric name for the primary score")
+    lower_is_better: bool = Field(
+        default=False, description="Whether lower scores are better"
+    )
+
+
+class PassCriteria(BaseModel):
+    """Pass/fail criteria for a benchmark."""
+
+    threshold: float = Field(..., description="Threshold value for passing")
+
+
+class Benchmark(BaseModel):
+    """Benchmark information from EvalHub API."""
+
+    id: str = Field(..., description="Unique benchmark identifier")
+    name: str = Field(..., description="Human-readable benchmark name")
+    description: str = Field(..., description="Benchmark description")
+    category: str = Field(..., description="Benchmark category")
+    metrics: list[str] = Field(default_factory=list, description="List of metrics")
+    num_few_shot: int | None = Field(None, description="Number of few-shot examples")
+    dataset_size: int | None = Field(None, description="Size of the evaluation dataset")
+    tags: list[str] = Field(default_factory=list, description="Tags for categorization")
+    primary_score: PrimaryScore | None = Field(
+        None, description="Primary score configuration"
+    )
+    pass_criteria: PassCriteria | None = Field(None, description="Pass/fail criteria")
+
+
+class BenchmarksList(BaseModel):
+    """List of benchmarks response."""
+
+    total_count: int = Field(..., description="Total number of benchmarks")
+    items: list[Benchmark] = Field(..., description="List of benchmarks")
 
 
 class Provider(BaseModel):
-    """Provider information from EvalHub API."""
+    """Provider information from EvalHub API.
 
-    id: str = Field(..., description="Provider identifier")
-    label: str = Field(..., description="Provider display name")
-    supported_benchmarks: list[SupportedBenchmark] = Field(
-        default_factory=list, description="Supported benchmarks"
+    Matches the Go ProviderResource structure from pkg/api/providers.go
+    """
+
+    resource: Resource = Field(..., description="Resource metadata")
+    name: str = Field(..., description="Provider display name")
+    description: str = Field(..., description="Provider description")
+    benchmarks: list[Benchmark] = Field(
+        default_factory=list, description="Benchmarks supported by this provider"
     )
 
 
 class ProviderList(BaseModel):
     """List of providers response."""
 
-    model_config = ConfigDict(populate_by_name=True)
+    total_count: int = Field(..., description="Total number of providers")
+    items: list[Provider] = Field(default_factory=list, description="List of providers")
 
-    total_count: int = Field(
-        ..., alias="total_providers", description="Total number of providers"
-    )
-    items: list[Provider] = Field(
-        ..., alias="providers", description="List of providers"
-    )
-
-
-class Benchmark(BaseModel):
-    """Benchmark information from EvalHub API."""
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    id: str = Field(
-        ..., description="Unique benchmark identifier", alias="benchmark_id"
-    )
-    provider_id: str = Field(..., description="Provider that owns this benchmark")
-    label: str = Field(..., description="Human-readable benchmark name", alias="name")
-    description: str = Field(..., description="Benchmark description")
-    category: str = Field(..., description="Benchmark category")
-    metrics: list[str] = Field(..., description="List of metrics")
-    num_few_shot: int = Field(..., description="Number of few-shot examples")
-    dataset_size: int | None = Field(None, description="Size of the evaluation dataset")
-    tags: list[str] = Field(default_factory=list, description="Tags for categorization")
-
-
-class BenchmarksList(BaseModel):
-    """List of benchmarks response."""
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    total_count: int = Field(..., description="Total number of benchmarks")
-    items: list[Benchmark] = Field(
-        ..., alias="benchmarks", description="List of benchmarks"
-    )
-
-
-class Resource(BaseModel):
-    """Resource metadata."""
-
-    id: str = Field(..., description="Resource identifier")
-    created_at: datetime = Field(..., description="Creation timestamp")
-    updated_at: datetime = Field(..., description="Last update timestamp")
+    @field_validator("items", mode="before")
+    @classmethod
+    def handle_none_items(cls, v: list[Provider] | None) -> list[Provider]:
+        """Convert None to empty list for compatibility with server responses."""
+        return v if v is not None else []
 
 
 class BenchmarkReference(BaseModel):
     """Reference to a benchmark within a collection."""
 
-    model_config = ConfigDict(populate_by_name=True)
-
+    id: str = Field(..., description="Benchmark identifier")
     provider_id: str = Field(..., description="Provider identifier")
-    id: str = Field(..., description="Benchmark identifier", alias="benchmark_id")
     weight: float = Field(default=1.0, description="Benchmark weight in collection")
-    config: dict[str, Any] = Field(
-        default_factory=dict, description="Benchmark configuration"
+    parameters: dict[str, Any] = Field(
+        default_factory=dict, description="Benchmark-specific parameters"
+    )
+    primary_score: PrimaryScore | None = Field(
+        default=None, description="Primary score configuration"
+    )
+    pass_criteria: PassCriteria | None = Field(
+        default=None, description="Pass/fail criteria"
     )
 
 
@@ -412,19 +589,25 @@ class Collection(BaseModel):
     benchmarks: list[BenchmarkReference] = Field(
         default_factory=list, description="Collection benchmarks"
     )
+    pass_criteria: PassCriteria | None = Field(
+        default=None, description="Pass/fail criteria"
+    )
 
 
 class CollectionList(BaseModel):
     """List of collections response."""
 
-    model_config = ConfigDict(populate_by_name=True)
-
-    total_count: int = Field(
-        ..., alias="total_collections", description="Total number of collections"
-    )
+    total_count: int = Field(..., description="Total number of collections")
     items: list[Collection] = Field(
-        ..., alias="collections", description="Collection resources"
+        default_factory=list, description="Collection resources"
     )
+
+    @field_validator("items", mode="before")
+    @classmethod
+    def handle_none_items(cls, v: list[Collection] | None) -> list[Collection]:
+        """Convert None to empty list for compatibility with server responses."""
+        return v if v is not None else []
+
     # Pagination fields
     first: dict[str, str] | None = Field(None, description="Link to first page")
     next: dict[str, str] | None = Field(None, description="Link to next page")
@@ -517,8 +700,8 @@ class HealthResponse(BaseModel):
     )
 
     # Error information for unhealthy status
-    error_message: str | None = Field(
-        default=None, description="Error message when status is unhealthy"
+    error: ErrorInfo | None = Field(
+        default=None, description="Error information when status is unhealthy"
     )
 
     # Additional info

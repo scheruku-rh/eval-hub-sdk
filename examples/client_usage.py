@@ -6,12 +6,8 @@ with a nested resource structure.
 
 import asyncio
 
-from evalhub import (
-    AsyncEvalHubClient,
-    EvaluationRequest,
-    ModelConfig,
-    SyncEvalHubClient,
-)
+from evalhub import AsyncEvalHubClient, ModelConfig, SyncEvalHubClient
+from evalhub.models.api import BenchmarkConfig, JobSubmissionRequest
 
 # Example 1: Synchronous client usage with nested resources
 print("=" * 60)
@@ -32,7 +28,7 @@ with SyncEvalHubClient() as client:  # type: SyncEvalHubClient
         providers = client.providers.list()
         print(f"\n✓ Found {len(providers)} providers")
         for provider in providers[:3]:  # Show first 3
-            print(f"  - {provider.id}: {provider.label}")
+            print(f"  - {provider.resource.id}: {provider.name}")
     except Exception as e:
         print(f"✗ Failed to list providers: {e}")
 
@@ -41,7 +37,7 @@ with SyncEvalHubClient() as client:  # type: SyncEvalHubClient
         benchmarks = client.benchmarks.list(category="math")
         print(f"\n✓ Found {len(benchmarks)} math benchmarks")
         for benchmark in benchmarks[:3]:  # Show first 3
-            print(f"  - {benchmark.id}: {benchmark.label}")
+            print(f"  - {benchmark.id}: {benchmark.name}")
     except Exception as e:
         print(f"✗ Failed to list benchmarks: {e}")
 
@@ -68,26 +64,32 @@ print("=" * 60)
 with SyncEvalHubClient() as eval_client:  # type: SyncEvalHubClient
     # Create evaluation request
     # Using a vLLM endpoint deployed on OpenShift
-    request = EvaluationRequest(
-        benchmark_id="gsm8k",
-        model=ModelConfig(
-            url="http://vllm-service.my-namespace.svc.cluster.local:8000/v1",
-            name="meta-llama/Llama-2-7b-chat-hf",
-        ),
-        num_few_shot=5,
-        experiment_name="GSM8K Evaluation",
-        tags={"environment": "dev", "version": "v1"},
+    model = ModelConfig(
+        url="http://vllm-service.my-namespace.svc.cluster.local:8000",
+        name="meta-llama/Llama-2-7b-chat-hf",
+    )
+
+    benchmark_config: BenchmarkConfig = BenchmarkConfig(
+        id="gsm8k",
+        provider_id="lm_evaluation_harness",
+        parameters={"num_fewshot": 5},
+    )
+
+    request = JobSubmissionRequest(
+        name="gsm8k-llama2-eval",
+        model=model,
+        benchmarks=[benchmark_config],
     )
 
     try:
         # Submit job using nested resource
         job = eval_client.jobs.submit(request)
         print(f"✓ Job submitted: {job.id}")
-        print(f"  Status: {job.status}")
+        print(f"  Status: {job.state}")
 
         # Check status using nested resource
         updated_job = eval_client.jobs.get(job.id)
-        print(f"✓ Job status updated: {updated_job.status}")
+        print(f"✓ Job status updated: {updated_job.state}")
 
         # Wait for completion (polling)
         # final_job = eval_client.jobs.wait_for_completion(job.id, timeout=300)
@@ -124,21 +126,26 @@ async def async_example() -> None:
 
             # Example: Submit evaluation job (commented out to avoid actual job creation)
             # Uncomment below to submit a real evaluation job:
-            # request = EvaluationRequest(
-            #     benchmark_id="mmlu",
+            # request = JobSubmissionRequest(
+            #     name="mmlu-eval",
             #     model=ModelConfig(
             #         url="http://vllm-service.my-namespace.svc.cluster.local:8000/v1",
             #         name="meta-llama/Llama-2-7b-chat-hf",
             #     ),
+            #     benchmarks=[
+            #         BenchmarkConfig(
+            #             id="mmlu",
+            #             provider_id="lm_evaluation_harness",
+            #         ),
+            #     ],
             # )
             # job = await client.jobs.submit(request)
             # print(f"✓ Async job submitted: {job.id}")
             #
             # # You can also wait for completion asynchronously
             # final_job = await client.jobs.wait_for_completion(job.id, timeout=300)
-            # if final_job.status == "completed":
-            #     results = await client.jobs.results(job.id)
-            #     print(f"✓ Results: {len(results.results)} metrics")
+            # if final_job.state == JobStatus.COMPLETED:
+            #     print(f"✓ Job completed")
 
         except NotImplementedError:
             print("✗ Some async operations not yet implemented (skeleton only)")

@@ -1,0 +1,56 @@
+id: lm_evaluation_harness
+name: LM Evaluation Harness
+description: Comprehensive evaluation framework for language models with 167 benchmarks
+runtime:
+  k8s:
+    image: quay.io/opendatahub/ta-lmes-job:odh-3.4
+    entrypoint:
+      - /opt/app-root/bin/python
+      - /opt/app-root/src/main.py
+    cpu_request: 100m
+    memory_request: 128Mi
+    cpu_limit: 500m
+    memory_limit: 1Gi
+    env:
+      - name: VAR_NAME
+        value: VALUE
+  local:
+    # reserved for local runtime
+
+benchmarks:
+  - id: arc_easy
+    name: ARC Easy
+    description: ARC Easy evaluation benchmark - AI2 Reasoning Challenge (Easy)
+    category: reasoning
+    metrics:
+      - accuracy
+      - acc_norm
+    num_few_shot: 0
+    dataset_size: 2376
+    tags:
+      - reasoning
+      - science
+      - lm_eval
+  - id: AraDiCE_boolq_lev
+    name: Aradice Boolq Lev
+    description: Aradice Boolq Lev evaluation benchmark
+    category: general
+    metrics:
+      - accuracy
+    num_few_shot: 0
+    dataset_size: 3270
+    tags:
+      - general
+      - lm_eval
+  - id: blimp
+    name: Blimp
+    description: Blimp evaluation benchmark
+    category: general
+    metrics:
+      - accuracy
+    num_few_shot: 0
+    dataset_size: 1000
+    tags:
+      - general
+      - lm_eval
+# truncated for E2E testing purposes.

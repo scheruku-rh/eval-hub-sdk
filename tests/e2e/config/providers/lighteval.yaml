@@ -1,0 +1,56 @@
+id: lighteval
+name: Lighteval
+description: Lightweight LLM evaluation framework from Hugging Face
+runtime:
+  k8s:
+    image: quay.io/evalhub/community-lighteval:latest
+    entrypoint:
+      - python
+      - main.py
+    cpu_request: 100m
+    memory_request: 128Mi
+    cpu_limit: 500m
+    memory_limit: 1Gi
+  local:
+    # reserved for local runtime
+
+benchmarks:
+  # Category benchmarks (these expand to multiple tasks)
+  - id: commonsense_reasoning
+    name: Commonsense Reasoning Suite
+    description: Suite of commonsense reasoning benchmarks (hellaswag, winogrande, openbookqa, arc:easy)
+    category: reasoning
+    metrics:
+      - accuracy
+      - acc_norm
+    tags:
+      - reasoning
+      - commonsense
+      - lighteval
+      - suite
+
+  - id: scientific_reasoning
+    name: Scientific Reasoning Suite
+    description: Scientific reasoning benchmarks (arc:easy, arc:challenge)
+    category: reasoning
+    metrics:
+      - accuracy
+      - acc_norm
+    tags:
+      - reasoning
+      - science
+      - lighteval
+      - suite
+
+  - id: physical_commonsense
+    name: Physical Commonsense Suite
+    description: Physical commonsense reasoning (piqa)
+    category: reasoning
+    metrics:
+      - accuracy
+    tags:
+      - reasoning
+      - physical
+      - lighteval
+      - suite
+# truncated for E2E testing purposes.

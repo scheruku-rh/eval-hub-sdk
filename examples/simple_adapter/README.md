@@ -128,7 +128,7 @@ sequenceDiagram
 
 The adapter runs as a container in a Kubernetes pod with:
 
-1. **ConfigMap** containing the job specification at `/etc/eval-job/spec.json`
+1. **ConfigMap** containing the job specification at `/meta/job.json`
 2. **Sidecar container** listening on `http://localhost:8080` for callbacks
 3. **Environment variables** for registry credentials
 
@@ -136,15 +136,20 @@ Example job spec in ConfigMap:
 
 ```json
 {
-  "job_id": "eval-001",
+  "id": "eval-001",
+  "provider_id": "evalhub-provider",
   "benchmark_id": "mmlu",
+  "benchmark_index": 0,
   "model": {
     "url": "http://model-server:8000/v1",
     "name": "llama-2-7b"
   },
-  "num_examples": 100,
-  "num_few_shot": 5,
-  "random_seed": 42
+  "parameters": {
+    "num_few_shot": 5,
+    "random_seed": 42
+  },
+  "callback_url": "http://localhost:8080",
+  "num_examples": 100
 }
 ```
 
@@ -182,9 +187,13 @@ class LocalCallbacks(JobCallbacks):
 
 # Create job spec
 spec = JobSpec(
-    job_id="local-test",
+    id="local-test",
+    provider_id="local-provider",
     benchmark_id="mmlu",
+    benchmark_index=0,
     model={"url": "http://localhost:8000", "name": "test-model"},
+    parameters={},
+    callback_url="http://localhost:8080",
     num_examples=10
 )
 
@@ -213,7 +222,7 @@ COPY simple_adapter.py /app/adapter.py
 
 WORKDIR /app
 
-# Run adapter (reads config from /etc/eval-job/spec.json)
+# Run adapter (reads config from /meta/job.json, configurable via EVALHUB_JOB_SPEC_PATH)
 CMD ["python", "adapter.py"]
 ```
 
@@ -233,7 +242,7 @@ To implement your own adapter for a different framework:
 1. **Replace the evaluation logic** in `_evaluate()` to call your framework
 2. **Update dataset loading** in `_load_dataset()` to load your benchmark data
 3. **Customize metrics** in `_compute_overall_score()` and return appropriate results
-4. **Add framework-specific configuration** to `benchmark_config` in JobSpec
+4. **Add framework-specific configuration** to `parameters` in JobSpec
 
 The adapter pattern handles all the infrastructure (status reporting, OCI artifacts, job lifecycle) so you only need to implement the framework-specific evaluation logic.
 
@@ -250,7 +259,7 @@ graph TB
     registry["OCI Registry<br/>(Artifacts)"]
     service["EvalHub Service"]
 
-    configmap -->|Mount /etc/eval-job/spec.json| adapter
+    configmap -->|Mount /meta/job.json| adapter
     adapter -->|Status Updates| sidecar
     adapter -->|Push Artifacts| registry
     sidecar -->|Forward Status & Results| service

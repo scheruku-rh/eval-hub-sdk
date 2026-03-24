@@ -38,11 +38,17 @@ repos:
         ]
         args: [--config-file=pyproject.toml]
 
+  - repo: https://github.com/commitizen-tools/commitizen
+    rev: v4.13.9
+    hooks:
+      - id: commitizen
+        stages: [commit-msg]
+
   - repo: local
     hooks:
       - id: pytest
         name: pytest
-        entry: uv run pytest
+        entry: uv run --extra dev pytest
         language: system
         pass_filenames: false
         always_run: true

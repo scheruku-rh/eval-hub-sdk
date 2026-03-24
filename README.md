@@ -1,5 +1,8 @@
 # EvalHub SDK
 
+[![PyPI version](https://img.shields.io/pypi/v/eval-hub-sdk.svg)](https://pypi.org/project/eval-hub-sdk/)
+[![CI](https://github.com/eval-hub/eval-hub-sdk/actions/workflows/test.yml/badge.svg?event=push)](https://github.com/eval-hub/eval-hub-sdk/actions/workflows/test.yml)
+
 **Framework Adapter SDK for EvalHub Integration**
 
 The EvalHub SDK provides a standardized way to create framework adapters that can be consumed by EvalHub, enabling a "Bring Your Own Framework" (BYOF) approach for evaluation frameworks.
@@ -29,7 +32,7 @@ graph TB
         end
 
         subgraph sidecar["Sidecar Container"]
-            S1["ConfigMap mounted<br/>/etc/eval-job/spec.json"]
+            S1["ConfigMap mounted<br/>/meta/job.json"]
             S2["Forward status to<br/>EvalHub service (HTTP)"]
             S4["Forward results to<br/>EvalHub service (HTTP)"]
         end
@@ -123,7 +126,7 @@ class MyFrameworkAdapter(FrameworkAdapter):
         # Load your evaluation framework and benchmark
         framework = load_your_framework()
         benchmark = framework.load_benchmark(config.benchmark_id)
-        model = framework.load_model(config.model.url)
+        model = framework.load_model(config.model)
 
         # Report evaluation start
         callbacks.report_status(JobStatusUpdate(
@@ -133,12 +136,12 @@ class MyFrameworkAdapter(FrameworkAdapter):
             message=f"Evaluating on {config.num_examples} examples"
         ))
 
-        # Run evaluation
+        # Run evaluation (adapter-specific params come from parameters)
         results = framework.evaluate(
             benchmark=benchmark,
             model=model,
             num_examples=config.num_examples,
-            num_few_shot=config.num_few_shot
+            num_few_shot=config.parameters.get("num_few_shot", 0)
         )
 
         # Save and persist artifacts
@@ -170,36 +173,41 @@ class MyFrameworkAdapter(FrameworkAdapter):
 
 ### 3. OCI Artifact Persistence
 
-The SDK provides built-in OCI artifact persistence. The adapter **always pushes OCI artifacts directly** using the SDK's `OCIArtifactPersister`.
+The SDK exposes an OCI persistence API via `callbacks.create_oci_artifact(...)`.
+
+Note: in this POC the underlying persister is currently a **placeholder/no-op** implementation (it logs what it would do and returns a dummy digest). This is still useful for adapter development because it keeps the interface stable while storage is implemented.
 
 #### Using DefaultCallbacks
 
 Use `DefaultCallbacks` for both production and development:
 
 ```python
-from evalhub.adapter import DefaultCallbacks
-import os
+from evalhub.adapter import AdapterSettings, DefaultCallbacks, JobSpec
 
-# Production (Kubernetes with sidecar for status updates)
+# Load settings and job spec explicitly
+settings = AdapterSettings.from_env()
+settings.validate_runtime()
+job_spec = JobSpec.from_file(settings.resolved_job_spec_path)
+
+# Initialize adapter with settings
+adapter = MyFrameworkAdapter(settings=settings)
+
 callbacks = DefaultCallbacks(
-    sidecar_url="http://localhost:8080",  # Sidecar for status updates
-    registry_url="ghcr.io",               # SDK pushes OCI directly
-    registry_username=os.getenv("REGISTRY_USER"),
-    registry_password=os.getenv("REGISTRY_TOKEN")
+    job_id=job_spec.job_id,
+    benchmark_id=job_spec.benchmark_id,
+    benchmark_index=job_spec.benchmark_index,
+    sidecar_url=job_spec.callback_url,  # SERVICE_URL
+    registry_url=settings.registry_url,      # REGISTRY_URL
+    registry_username=settings.registry_username,
+    registry_password=settings.registry_password,
+    insecure=settings.registry_insecure,     # REGISTRY_INSECURE (true/false)
 )
 
-# Local development (no sidecar)
-callbacks = DefaultCallbacks(
-    registry_url="localhost:5000",
-    insecure=True  # For local registries
-)
-
-adapter = MyFrameworkAdapter()
-results = adapter.run_benchmark_job(spec, callbacks)
+results = adapter.run_benchmark_job(job_spec, callbacks)
 ```
 
 **Key Points:**
-- **Status updates**: Sent to sidecar if `sidecar_url` is provided, otherwise logged locally
+- **Status updates**: Sent to sidecar if `sidecar_url` is provided, otherwise logged locally. Both `report_status` and `report_results` events always include `benchmark_index` (and `provider_id` when set) so the service can associate events with the correct benchmark in multi-benchmark jobs.
 - **OCI artifacts**: Always pushed directly by the SDK using `OCIArtifactPersister`
 
 #### Advanced: Direct Persister Usage
@@ -250,12 +258,7 @@ class S3Persister:
         )
 ```
 
-**Requirements**: OCI pushing requires `oras` package:
-```bash
-pip install oras
-```
-
-Without `oras`, the persister will return mock results (useful for testing).
+**Note**: OCI pushing is not yet implemented in this POC; the persister returns mock results.
 
 ### 4. Containerise Your Adapter
 
@@ -282,23 +285,30 @@ Create the entrypoint script:
 
 ```python
 # run_adapter.py
-import json
-from pathlib import Path
 from my_framework_adapter import MyFrameworkAdapter
-from evalhub.adapter import JobSpec, DefaultCallbacks
+from evalhub.adapter import AdapterSettings, DefaultCallbacks, JobSpec
 
-# Load job spec from mounted ConfigMap
-config_path = Path("/etc/eval-job/spec.json")
-with open(config_path) as f:
-    spec_data = json.load(f)
+# Load settings and job spec explicitly
+settings = AdapterSettings.from_env()
+settings.validate_runtime()
+job_spec = JobSpec.from_file(settings.resolved_job_spec_path)
 
-job_spec = JobSpec(**spec_data)
+# Initialize adapter with settings
+adapter = MyFrameworkAdapter(settings=settings)
 
-# Create callbacks that communicate with localhost sidecar
-callbacks = DefaultCallbacks(sidecar_url="http://localhost:8080")
+# Create callbacks
+callbacks = DefaultCallbacks(
+    job_id=job_spec.job_id,
+    benchmark_id=job_spec.benchmark_id,
+    benchmark_index=job_spec.benchmark_index,
+    sidecar_url=job_spec.callback_url,
+    registry_url=settings.registry_url,
+    registry_username=settings.registry_username,
+    registry_password=settings.registry_password,
+    insecure=settings.registry_insecure,
+)
 
 # Run adapter
-adapter = MyFrameworkAdapter()
 results = adapter.run_benchmark_job(job_spec, callbacks)
 
 # Report final results to service via sidecar
@@ -325,7 +335,7 @@ spec:
         image: myregistry/my-adapter:latest
         volumeMounts:
         - name: job-spec
-          mountPath: /etc/eval-job
+          mountPath: /meta
       # Sidecar container (provided by platform)
       - name: sidecar
         image: evalhub/sidecar:latest
@@ -374,7 +384,7 @@ from evalhub.adapter import (
 ```python
 # Interacting with EvalHub REST API
 from evalhub.client import EvalHubClient
-from evalhub.models.api import ModelConfig, EvaluationRequest
+from evalhub.models.api import ModelConfig, JobSubmissionRequest, BenchmarkConfig
 ```
 
 ## Complete Example
@@ -399,12 +409,16 @@ from evalhub.adapter import JobSpec
 
 # Load job specification
 job_spec = JobSpec(
-    job_id="eval-123",
+    id="eval-123",
+    provider_id="my-provider",
     benchmark_id="mmlu",
+    benchmark_index=0,
     model=ModelConfig(
         url="http://vllm-service:8000",
         name="llama-2-7b"
     ),
+    parameters={},
+    callback_url="http://localhost:8080",
     num_examples=100
 )
 
@@ -446,13 +460,34 @@ class MyFrameworkAdapter(FrameworkAdapter):
 **JobSpec** - Configuration loaded from ConfigMap:
 ```python
 class JobSpec(BaseModel):
-    job_id: str                    # Unique job identifier
-    benchmark_id: str              # Benchmark to evaluate
-    model: ModelConfig             # Model configuration
-    num_examples: Optional[int]    # Number of examples to evaluate
-    num_few_shot: Optional[int]    # Number of few-shot examples
-    random_seed: Optional[int]     # Random seed for reproducibility
-    benchmark_config: Dict[str, Any]  # Benchmark-specific parameters
+    # Mandatory fields
+    id: str                           # Unique job identifier
+    provider_id: str                   # Provider identifier
+    benchmark_id: str                 # Benchmark to evaluate
+    benchmark_index: int              # Index of this benchmark within the job (included in all status/result events)
+    model: ModelConfig                # Model configuration (url, name)
+    parameters: Dict[str, Any]  # Adapter-specific parameters
+    callback_url: str                  # Base URL for callbacks (SDK appends /status, /results)
+
+    # Optional fields
+    num_examples: Optional[int]       # Number of examples to evaluate
+    experiment_name: Optional[str]    # Experiment name
+    tags: list[dict[str, str]]        # Custom tags (default: [])
+
+    @classmethod
+    def from_file(cls, path: Path | str) -> Self:
+        """Load JobSpec from a JSON file."""
+```
+
+Load a job spec from file:
+```python
+from evalhub.adapter import JobSpec
+
+# Explicit path (recommended)
+spec = JobSpec.from_file("/meta/job.json")
+
+# Or use settings for the path
+spec = JobSpec.from_file(settings.resolved_job_spec_path)
 ```
 
 **JobCallbacks** - Interface for service communication:
@@ -467,11 +502,14 @@ class JobCallbacks(ABC):
         """Create and push OCI artifact"""
 ```
 
+When using `DefaultCallbacks`, pass `benchmark_index` (and optionally `provider_id`) from the job spec so that status and result events sent to the service always include `benchmark_index`, allowing the service to associate events with the correct benchmark in multi-benchmark jobs.
+
 **JobResults** - Returned when job completes:
 ```python
 class JobResults(BaseModel):
     job_id: str
     benchmark_id: str
+    benchmark_index: int                       # Index within the job
     model_name: str
     results: List[EvaluationResult]           # Evaluation metrics
     overall_score: Optional[float]            # Overall score if applicable
@@ -506,24 +544,31 @@ CMD ["python", "entrypoint.py"]
 
 ```python
 # entrypoint.py
-import json
-from pathlib import Path
 from my_adapter import MyFrameworkAdapter
-from evalhub.adapter import JobSpec, DefaultCallbacks
+from evalhub.adapter import AdapterSettings, DefaultCallbacks, JobSpec
 
-# Load job spec from mounted ConfigMap
-config_path = Path("/etc/eval-job/spec.json")
-with open(config_path) as f:
-    job_spec = JobSpec(**json.load(f))
+# Load settings and job spec explicitly
+settings = AdapterSettings.from_env()
+settings.validate_runtime()
+job_spec = JobSpec.from_file(settings.resolved_job_spec_path)
 
-# Create callbacks (communicate with sidecar on localhost:8080)
-callbacks = DefaultCallbacks(sidecar_url="http://localhost:8080")
+# Initialize adapter with settings
+adapter = MyFrameworkAdapter(settings=settings)
+
+# Create callbacks
+callbacks = DefaultCallbacks(
+    job_id=job_spec.job_id,
+    benchmark_id=job_spec.benchmark_id,
+    benchmark_index=job_spec.benchmark_index,
+    sidecar_url=job_spec.callback_url,
+    registry_url=settings.registry_url,
+    insecure=settings.registry_insecure,
+)
 
 # Run adapter
-adapter = MyFrameworkAdapter()
 results = adapter.run_benchmark_job(job_spec, callbacks)
 
-# Report final results to service via sidecar
+# Report final results
 callbacks.report_results(results)
 
 print(f"Job {results.job_id} completed with score: {results.overall_score}")
@@ -546,7 +591,7 @@ spec:
         image: myregistry/my-framework-adapter:latest
         volumeMounts:
         - name: job-spec
-          mountPath: /etc/eval-job
+          mountPath: /meta
       - name: sidecar
         image: evalhub/sidecar:latest
         env:
@@ -592,28 +637,13 @@ ruff format src/ tests/
 ### Testing Your Adapter
 
 ```python
-import pytest
-from evalhub.adapter.client import AdapterClient
+from evalhub.adapter import AdapterSettings
 
-@pytest.mark.asyncio
-async def test_adapter_health():
-    async with AdapterClient("http://localhost:8080") as client:
-        health = await client.health_check()
-        assert health.status == "healthy"
-
-@pytest.mark.asyncio
-async def test_list_benchmarks():
-    async with AdapterClient("http://localhost:8080") as client:
-        benchmarks = await client.list_benchmarks()
-        assert len(benchmarks) > 0
-        assert all(b.benchmark_id for b in benchmarks)
-```
-
-### Development Server
-
-```bash
-# Run with auto-reload for development
-evalhub-adapter run my_adapter:MyAdapter --reload --log-level DEBUG
+def test_settings_parse(monkeypatch):
+    monkeypatch.setenv("EVALHUB_MODE", "local")
+    monkeypatch.setenv("REGISTRY_URL", "localhost:5000")
+    s = AdapterSettings.from_env()
+    assert str(s.registry_url) == "localhost:5000"
 ```
 
 ### Quality Assurance

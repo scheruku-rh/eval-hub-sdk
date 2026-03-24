@@ -35,18 +35,17 @@ Quick Start:
             )
 
             # Persist artifacts if needed
-            if output_files:
+            if config.exports and config.exports.oci:
                 artifact = callbacks.create_oci_artifact(OCIArtifactSpec(
-                    files=output_files,
-                    job_id=config.job_id,
-                    benchmark_id=config.benchmark_id,
-                    model_name=config.model.name
+                    files_path=output_dir,
+                    coordinates=config.exports.oci.coordinates,
                 ))
 
             # Return results
             return JobResults(
-                job_id=config.job_id,
+                id=config.id,
                 benchmark_id=config.benchmark_id,
+                benchmark_index=config.benchmark_index,
                 model_name=config.model.name,
                 results=results,
                 ...
@@ -73,18 +72,23 @@ from ..models.api import (
     JobStatus,
     ModelConfig,
 )
+from .auth import ModelCredentials, read_model_auth_key, resolve_model_credentials
 from .callbacks import DefaultCallbacks
+from .config import MlflowBackend, get_job_spec_path
 from .models import (
+    ErrorInfo,
     FrameworkAdapter,
     JobCallbacks,
     JobPhase,
     JobResults,
     JobSpec,
     JobStatusUpdate,
+    MessageInfo,
     OCIArtifactResult,
     OCIArtifactSpec,
 )
-from .oci import OCIArtifactPersister, Persister
+from .oci import OCIArtifactPersister
+from .settings import AdapterSettings
 
 # Legacy API is available but deprecated
 # from evalhub.adapter.legacy import ...
@@ -98,13 +102,21 @@ __all__ = [
     "JobResults",
     "JobStatusUpdate",
     "JobPhase",
+    "ErrorInfo",
+    "MessageInfo",
     # OCI models
     "OCIArtifactSpec",
     "OCIArtifactResult",
-    "Persister",
     "OCIArtifactPersister",
     # Callback implementation
     "DefaultCallbacks",
+    # Configuration utilities
+    "get_job_spec_path",
+    "AdapterSettings",
+    "MlflowBackend",
+    "ModelCredentials",
+    "read_model_auth_key",
+    "resolve_model_credentials",
     # Common models (re-exported for convenience)
     "JobStatus",
     "ModelConfig",

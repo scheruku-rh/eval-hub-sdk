@@ -46,23 +46,24 @@ Example (synchronous):
 Note: EvalHubClient is an alias for AsyncEvalHubClient (async by default).
 """
 
-from .base import BaseAsyncClient, BaseSyncClient, ClientError
+from .base import (
+    BaseAsyncClient,
+    BaseSyncClient,
+    ClientError,
+    JobCanNotBeCancelledError,
+    JobNotFoundError,
+)
 from .evalhub import AsyncEvalHubClient, EvalHubClient, SyncEvalHubClient
-from .evaluations import AsyncEvaluationsClient, SyncEvaluationsClient
-from .providers import AsyncProvidersClient, SyncProvidersClient
 
 __all__ = [
     # Base classes
     "BaseAsyncClient",
     "BaseSyncClient",
     "ClientError",
+    "JobNotFoundError",
+    "JobCanNotBeCancelledError",
     # Main clients (recommended)
     "AsyncEvalHubClient",
     "SyncEvalHubClient",
     "EvalHubClient",  # Alias for AsyncEvalHubClient
-    # Legacy clients (for backward compatibility)
-    "AsyncProvidersClient",
-    "AsyncEvaluationsClient",
-    "SyncProvidersClient",
-    "SyncEvaluationsClient",
 ]
