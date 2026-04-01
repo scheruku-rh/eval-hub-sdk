@@ -42,7 +42,15 @@ from .models import (
     ModelConfig,
 )
 
-__version__ = "0.1.3"
+__version__ = "0.1.6"
+
+
+def sdk_install_debug_info() -> tuple[str, str]:
+    """Return (version, installed_package_path) for verifying which eval-hub-sdk is loaded."""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parent
+    return __version__, str(root)
 
 # Base exports - always available
 __all__ = [

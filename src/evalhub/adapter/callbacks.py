@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -249,9 +250,8 @@ class DefaultCallbacks(JobCallbacks):
         provider_id: str | None = None,
         benchmark_index: int = 0,
         sidecar_url: str | None = None,
+        evalhub_mode: EvalHubMode = EvalHubMode.LOCAL,
         insecure: bool = False,
-        auth_token: str | None = None,
-        auth_token_path: Path | str | None = None,
         ca_bundle_path: Path | str | None = None,
         events_path_template: str | None = None,
         oci_auth_config_path: Path | None = None,
@@ -270,12 +270,14 @@ class DefaultCallbacks(JobCallbacks):
             benchmark_index: Index of this benchmark within the job (default 0).
             sidecar_url: URL of evalhub service for status updates (optional).
                         If None, status updates are logged locally.
+            evalhub_mode: When ``EvalHubMode.K8S``, do not auto-load cluster CA bundles from the
+                        adapter filesystem for eval-hub HTTP (use ``ca_bundle_path`` or
+                        ``EVALHUB_CA_BUNDLE_PATH`` if needed); the runtime sidecar injects upstream
+                        auth. Default is ``EvalHubMode.LOCAL``.
             insecure: Allow insecure HTTP connections (evalhub)
-            auth_token: Explicit authentication token (overrides auto-detection)
-            auth_token_path: Path to authentication token file (e.g., ServiceAccount token)
-                           If not provided, auto-detects Kubernetes ServiceAccount token
             ca_bundle_path: Path to CA bundle for TLS verification
                           If not provided, auto-detects OpenShift/Kubernetes CA bundles
+                          (in local mode; in K8s mode see ``EVALHUB_CA_BUNDLE_PATH``).
             oci_proxy_host: OCI proxy host for k8s sidecar mode (e.g. "localhost:8080").
                           When set, the OCI persister pushes to this host instead of the
                           real registry and skips Python-side auth (the sidecar handles
@@ -297,6 +299,7 @@ class DefaultCallbacks(JobCallbacks):
         self.benchmark_id = benchmark_id
         self.provider_id = provider_id
         self.benchmark_index = benchmark_index
+        self._evalhub_mode = evalhub_mode
         self.sidecar_url = sidecar_url.rstrip("/") if sidecar_url else None
         self._events_path_template = (
             events_path_template
@@ -319,10 +322,6 @@ class DefaultCallbacks(JobCallbacks):
 
         # Store insecure flag for evalhub communication
         self._insecure = insecure
-
-        # Store auth token source for per-request reading
-        self._explicit_auth_token = auth_token
-        self._auth_token_path = self._resolve_auth_token_path(auth_token_path)
 
         # Auto-detect or load CA bundle (only if TLS verification is enabled)
         if insecure:
@@ -353,76 +352,27 @@ class DefaultCallbacks(JobCallbacks):
                     "Install with: pip install httpx"
                 )
 
-    @staticmethod
-    def _resolve_auth_token_path(token_path: Path | str | None) -> Path | None:
-        """Resolve the path to the authentication token file.
-
-        Priority:
-        1. Specified token path (if it exists)
-        2. Auto-detected Kubernetes ServiceAccount token
-        3. None (local mode, no authentication)
-
-        Args:
-            token_path: Path to token file
-
-        Returns:
-            Path to token file or None
-        """
-        if token_path:
-            path = Path(token_path)
-            if path.exists():
-                return path
-            logger.warning(f"Specified token path does not exist: {token_path}")
-
-        default_token_path = Path("/var/run/secrets/kubernetes.io/serviceaccount/token")
-        if default_token_path.exists():
-            logger.debug("Auto-detected Kubernetes ServiceAccount token")
-            return default_token_path
-
-        logger.debug("No authentication token found - running in local mode")
-        return None
-
-    def _read_auth_token(self) -> str | None:
-        """Read the authentication token fresh from disk (or return explicit token).
-
-        Returns:
-            Token string or None
-        """
-        if self._explicit_auth_token:
-            return self._explicit_auth_token
-
-        if self._auth_token_path:
-            try:
-                return self._auth_token_path.read_text().strip() or None
-            except OSError:
-                logger.warning(f"Failed to read token from {self._auth_token_path}")
-                return None
-
-        return None
-
     def _resolve_ca_bundle(self, ca_bundle_path: Path | str | None) -> Path | None:
-        """Resolve CA bundle path with auto-detection.
-
-        Priority:
-        1. Explicitly specified CA bundle path
-        2. Auto-detected OpenShift service-ca
-        3. Auto-detected Kubernetes ServiceAccount CA
-        4. None (use system defaults or insecure mode)
-
-        Args:
-            ca_bundle_path: Path to CA bundle file
-
-        Returns:
-            Path to CA bundle or None
-        """
+        """Resolve CA bundle for TLS to ``sidecar_url`` (eval-hub client in adapter)."""
         # Use explicit CA bundle if provided
         if ca_bundle_path:
             path = Path(ca_bundle_path)
             if path.exists():
                 return path
-            logger.warning(f"Specified CA bundle does not exist: {ca_bundle_path}")
+            logger.warning("Specified CA bundle does not exist: %s", ca_bundle_path)
 
-        # Try common CA bundle locations
+        if self._evalhub_mode == EvalHubMode.K8S:
+            env_ca = os.environ.get("EVALHUB_CA_BUNDLE_PATH", "").strip()
+            if env_ca:
+                p = Path(env_ca)
+                if p.exists():
+                    return p
+            logger.debug(
+                "evalhub_mode=k8s: not auto-loading cluster CA bundles on adapter (use EVALHUB_CA_BUNDLE_PATH if needed)"
+            )
+            return None
+
+        # Local / non-sidecar: try common CA bundle locations
         ca_paths = [
             Path("/etc/pki/ca-trust/source/anchors/service-ca.crt"),  # OpenShift
             Path(
@@ -440,9 +390,13 @@ class DefaultCallbacks(JobCallbacks):
         logger.debug("No CA bundle found - using system defaults")
         return None
 
-    @staticmethod
-    def _resolve_namespace() -> str | None:
-        """Read the pod namespace from the ServiceAccount mount."""
+    def _resolve_namespace(self) -> str | None:
+        """Tenant namespace for ``X-Tenant`` (prefer env in K8s when SA namespace file is absent)."""
+        if self._evalhub_mode == EvalHubMode.K8S:
+            for key in ("POD_NAMESPACE", "NAMESPACE", "KUBERNETES_NAMESPACE"):
+                v = os.environ.get(key, "").strip()
+                if v:
+                    return v
         ns_path = Path("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
         if ns_path.exists():
             try:
@@ -452,12 +406,8 @@ class DefaultCallbacks(JobCallbacks):
         return None
 
     def _request_headers(self) -> dict[str, str]:
-        """Build per-request headers with fresh auth token and tenant namespace."""
+        """Build per-request headers for eval-hub HTTP (tenant; no adapter bearer token)."""
         headers: dict[str, str] = {}
-
-        token = self._read_auth_token()
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
 
         namespace = self._resolve_namespace()
         if namespace:
@@ -468,8 +418,7 @@ class DefaultCallbacks(JobCallbacks):
     def _create_http_client(self) -> Any:
         """Create httpx client with TLS configuration.
 
-        Auth headers are added per-request via _request_headers() so that
-        rotated ServiceAccount tokens are picked up automatically.
+        Per-request headers (e.g. ``X-Tenant``) are added via _request_headers().
 
         Returns:
             httpx.Client: Configured HTTP client
@@ -536,8 +485,8 @@ class DefaultCallbacks(JobCallbacks):
             except self.httpx.HTTPStatusError as e:
                 if e.response.status_code == 401:
                     logger.error(
-                        "Authentication failed (401). Ensure the job has a valid "
-                        "ServiceAccount token at /var/run/secrets/kubernetes.io/serviceaccount/token"
+                        "Authentication failed (401). For sidecar deployments, ensure the "
+                        "runtime sidecar can obtain a token for eval-hub; the adapter does not send one."
                     )
                 elif e.response.status_code == 403:
                     logger.error(
@@ -686,24 +635,23 @@ class DefaultCallbacks(JobCallbacks):
     @staticmethod
     def from_adapter(adapter: FrameworkAdapter) -> DefaultCallbacks:
         """convenience method, and do not store adapter instance"""
+        k8s = adapter.settings.mode == EvalHubMode.K8S
         return DefaultCallbacks(
             job_id=adapter.job_spec.id,
             provider_id=adapter.job_spec.provider_id,
             benchmark_id=adapter.job_spec.benchmark_id,
             benchmark_index=adapter.job_spec.benchmark_index,
             sidecar_url=adapter.job_spec.callback_url,
+            evalhub_mode=adapter.settings.mode,
             insecure=adapter.settings.evalhub_insecure,
-            oci_auth_config_path=adapter.settings.oci_auth_config_path,
-            oci_insecure=adapter.settings.oci_insecure,
-            oci_proxy_host=(
-                DEFAULT_OCI_PROXY_HOST
-                if adapter.settings.mode == EvalHubMode.K8S
-                else None
+            ca_bundle_path=adapter.settings.ca_bundle_path,
+            oci_auth_config_path=(
+                None if k8s else adapter.settings.oci_auth_config_path
             ),
+            oci_insecure=adapter.settings.oci_insecure,
+            oci_proxy_host=(DEFAULT_OCI_PROXY_HOST if k8s else None),
             termination_file_path=(
-                DEFAULT_TERMINATION_FILE_PATH
-                if adapter.settings.mode == EvalHubMode.K8S
-                else None
+                DEFAULT_TERMINATION_FILE_PATH if k8s else None
             ),
             mlflow_backend=adapter.settings.mlflow_backend,
         )

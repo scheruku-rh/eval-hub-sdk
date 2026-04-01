@@ -143,9 +143,9 @@ def _detect_ca_bundle() -> Path | None:
 class MlflowClient:
     """Minimal MLflow tracking client using the REST API.
 
-    Configuration priority (mirrors the official SDK and mlflow-go):
-    1. Explicit constructor arguments
-    2. Environment variables (MLFLOW_TRACKING_URI, MLFLOW_TRACKING_TOKEN, etc.)
+    Tracking URI comes from the constructor or ``MLFLOW_TRACKING_URI``. The adapter does not
+    resolve bearer tokens or token files here; in Kubernetes job pods the eval-runtime-sidecar
+    injects auth upstream to MLflow. Local-only token support can be reintroduced later if needed.
 
     Example::
 
@@ -164,8 +164,6 @@ class MlflowClient:
     def __init__(
         self,
         tracking_uri: str | None = None,
-        token: str | None = None,
-        token_path: str | Path | None = None,
         headers: dict[str, str] | None = None,
         insecure: bool | None = None,
         timeout: float = 30.0,
@@ -181,16 +179,11 @@ class MlflowClient:
                 "(pass tracking_uri or set MLFLOW_TRACKING_URI)"
             )
 
-        # --- Auth token ---
-        self._token = self._resolve_token(token, token_path)
-
-        # --- HTTP headers ---
+        # --- HTTP headers (no adapter-side bearer token; sidecar injects upstream in k8s) ---
         req_headers: dict[str, str] = {
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
-        if self._token:
-            req_headers["Authorization"] = f"Bearer {self._token}"
 
         # Workspace header (Red Hat midstream multi-tenant MLflow fork)
         workspace = os.environ.get("MLFLOW_WORKSPACE")
@@ -246,31 +239,6 @@ class MlflowClient:
 
     def __exit__(self, *_exc: object) -> None:
         self.close()
-
-    # -- token resolution ---------------------------------------------------
-
-    @staticmethod
-    def _resolve_token(
-        explicit: str | None,
-        token_path: str | Path | None,
-    ) -> str | None:
-        if explicit:
-            return explicit
-
-        # MLFLOW_TRACKING_TOKEN takes precedence
-        env_token = os.environ.get("MLFLOW_TRACKING_TOKEN")
-        if env_token:
-            return env_token
-
-        # Then try the token-path env var (ROSA/STS projected token)
-        path = token_path or os.environ.get("MLFLOW_TRACKING_TOKEN_PATH")
-        if path:
-            try:
-                return Path(path).read_text().strip() or None
-            except OSError as e:
-                logger.warning("Could not read MLflow token from %s: %s", path, e)
-
-        return None
 
     # -- low-level HTTP -----------------------------------------------------
 

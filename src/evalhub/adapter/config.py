@@ -19,11 +19,11 @@ class MlflowBackend(StrEnum):
     """MLflow client backend for artifact saving.
 
     - ODH: use the lightweight built-in MlflowClient (default).
-      Requires MLFLOW_TRACKING_URI and related env vars injected by the service.
+      Requires ``MLFLOW_TRACKING_URI``; in Kubernetes job pods the eval-runtime-sidecar
+      injects upstream auth (the adapter client does not attach bearer tokens).
     - UPSTREAM: use the official ``mlflow`` Python library.
-      Requires ``mlflow`` (or ``mlflow-skinny``) to be installed in the container.
-      Auth is handled via MLFLOW_TRACKING_TOKEN / MLFLOW_TRACKING_AUTH=kubernetes
-      as per the upstream client conventions.
+      Requires ``mlflow`` (or ``mlflow-skinny``) to be installed in the container;
+      authentication follows that library's configuration.
     """
 
     ODH = "odh"
