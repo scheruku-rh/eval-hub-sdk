@@ -120,6 +120,23 @@ def eval() -> None:
     """
 
 
+def _coerce_param_value(value: str) -> Any:
+    """Coerce a CLI parameter string to its most appropriate Python type."""
+    if value.lower() in ("true", "false"):
+        return value.lower() == "true"
+    if value.lower() in ("null", "none"):
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        pass
+    return value
+
+
 def _load_config_file(path: str) -> dict[str, Any]:
     """Load a YAML or JSON config file for eval run."""
     with open(path) as f:
@@ -135,6 +152,9 @@ def _load_config_file(path: str) -> dict[str, Any]:
     return data
 
 
+_REQUEST_LEVEL_PARAMS = {"num_examples"}
+
+
 def _build_request_from_flags(
     name: str,
     model_url: str,
@@ -146,9 +166,17 @@ def _build_request_from_flags(
     dataset: str | None,
     experiment: ExperimentConfig | None = None,
     exports: EvaluationExports | None = None,
+    extra_params: dict[str, Any] | None = None,
 ) -> JobSubmissionRequest:
     """Build a JobSubmissionRequest from CLI flags."""
     parameters: dict[str, Any] = {}
+    request_kwargs: dict[str, Any] = {}
+    if extra_params:
+        for key, value in extra_params.items():
+            if key in _REQUEST_LEVEL_PARAMS:
+                request_kwargs[key] = value
+            else:
+                parameters[key] = value
     if metrics:
         parameters["metrics"] = list(metrics)
     if dataset:
@@ -164,6 +192,7 @@ def _build_request_from_flags(
         benchmarks=benchmarks,
         experiment=experiment,
         exports=exports,
+        **request_kwargs,
     )
 
 
@@ -189,6 +218,16 @@ def _build_request_from_flags(
 )
 @click.option("--dataset", default=None, help="Dataset identifier or path.")
 @click.option("--description", default=None, help="Job description.")
+@click.option(
+    "--param",
+    "-p",
+    "params",
+    multiple=True,
+    help=(
+        "Benchmark parameter as key=value (repeatable). "
+        "Example: --param tokenizer=my-tokenizer --param batch_size=3"
+    ),
+)
 @click.option(
     "--experiment",
     "experiment_name",
@@ -237,6 +276,7 @@ def eval_run(
     metrics: tuple[str, ...],
     dataset: str | None,
     description: str | None,
+    params: tuple[str, ...],
     experiment_name: str | None,
     oci_host: str | None,
     oci_repository: str | None,
@@ -264,6 +304,9 @@ def eval_run(
       evalhub eval run --name my-eval --model-url http://vllm:8000/v1 \\
           --model-name llama3 --provider guidellm -b quick_perf_test \\
           --oci-host quay.io --oci-repository myorg/myrepo --oci-connection my-oci-secret
+      evalhub eval run --name my-eval --model-url http://vllm:8000/v1 \\
+          --model-name llama3 --provider lm_evaluation_harness -b mmlu \\
+          --param tokenizer=my-tokenizer --param batch_size=3
     """
     client = get_client(ctx)
 
@@ -301,6 +344,14 @@ def eval_run(
                     k8s=k8s,
                 )
             )
+        extra_params: dict[str, Any] = {}
+        for p in params:
+            if "=" not in p:
+                raise click.ClickException(
+                    f"Invalid --param format: {p!r}. Expected key=value."
+                )
+            key, value = p.split("=", 1)
+            extra_params[key] = _coerce_param_value(value)
         request = _build_request_from_flags(
             name=cast(str, name),
             model_url=cast(str, model_url),
@@ -312,6 +363,7 @@ def eval_run(
             dataset=dataset,
             experiment=experiment,
             exports=exports,
+            extra_params=extra_params,
         )
 
     job = client.jobs.submit(request)
