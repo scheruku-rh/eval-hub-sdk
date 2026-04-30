@@ -152,9 +152,6 @@ def _load_config_file(path: str) -> dict[str, Any]:
     return data
 
 
-_REQUEST_LEVEL_PARAMS = {"num_examples"}
-
-
 def _build_request_from_flags(
     name: str,
     model_url: str,
@@ -170,13 +167,8 @@ def _build_request_from_flags(
 ) -> JobSubmissionRequest:
     """Build a JobSubmissionRequest from CLI flags."""
     parameters: dict[str, Any] = {}
-    request_kwargs: dict[str, Any] = {}
     if extra_params:
-        for key, value in extra_params.items():
-            if key in _REQUEST_LEVEL_PARAMS:
-                request_kwargs[key] = value
-            else:
-                parameters[key] = value
+        parameters.update(extra_params)
     if metrics:
         parameters["metrics"] = list(metrics)
     if dataset:
@@ -192,7 +184,6 @@ def _build_request_from_flags(
         benchmarks=benchmarks,
         experiment=experiment,
         exports=exports,
-        **request_kwargs,
     )
 
 
@@ -262,6 +253,15 @@ def _build_request_from_flags(
     show_default=True,
     help="Poll interval in seconds when using --wait.",
 )
+@click.option(
+    "--show-request",
+    is_flag=True,
+    default=False,
+    help=(
+        "Print the JSON body sent to POST /api/v1/evaluations/jobs to stderr, "
+        "then submit the job."
+    ),
+)
 @format_option()
 @click.pass_context
 @handle_api_errors
@@ -284,6 +284,7 @@ def eval_run(
     wait_for: bool,
     timeout: float | None,
     poll_interval: float,
+    show_request: bool,
     output_format: str,
 ) -> None:
     """Submit an evaluation job.
@@ -365,6 +366,10 @@ def eval_run(
             exports=exports,
             extra_params=extra_params,
         )
+
+    if show_request:
+        payload = request.model_dump(mode="json", exclude_none=True)
+        click.echo(json.dumps(payload, indent=2), err=True)
 
     job = client.jobs.submit(request)
     structured = output_format in ("json", "yaml")

@@ -149,6 +149,35 @@ class TestEvalRun:
         assert len(req.benchmarks) == 2
         assert req.experiment is None
 
+    def test_run_show_request_prints_json(
+        self, runner: CliRunner, config_file: Path, mock_client: MagicMock
+    ) -> None:
+        mock_client.jobs.submit.return_value = _make_job()
+        with patch("evalhub.cli.main.get_client", return_value=mock_client):
+            result = runner.invoke(
+                main,
+                [
+                    "eval",
+                    "run",
+                    "--name",
+                    "inline-eval",
+                    "--model-url",
+                    "http://vllm:8000/v1",
+                    "--model-name",
+                    "llama3",
+                    "--provider",
+                    "lm_eval",
+                    "-b",
+                    "mmlu",
+                    "--show-request",
+                ],
+            )
+        assert result.exit_code == 0
+        assert '"name":' in result.stderr
+        assert "inline-eval" in result.stderr
+        assert "mmlu" in result.stderr
+        assert "Job submitted" in result.output
+
     def test_run_with_inline_experiment(
         self, runner: CliRunner, config_file: Path, mock_client: MagicMock
     ) -> None:
@@ -475,10 +504,10 @@ class TestEvalRun:
             )
         assert result.exit_code == 0
         req = mock_client.jobs.submit.call_args[0][0]
-        assert req.num_examples == 5
-        assert isinstance(req.num_examples, int)
+        assert req.num_examples is None
         params = req.benchmarks[0].parameters
-        assert "num_examples" not in params
+        assert params["num_examples"] == 5
+        assert isinstance(params["num_examples"], int)
         assert params["temperature"] == 0.7
         assert isinstance(params["temperature"], float)
         assert params["use_cache"] is True
@@ -514,8 +543,8 @@ class TestEvalRun:
             )
         assert result.exit_code == 0
         req = mock_client.jobs.submit.call_args[0][0]
-        assert req.num_examples == 10
-        assert "num_examples" not in req.benchmarks[0].parameters
+        assert req.num_examples is None
+        assert req.benchmarks[0].parameters["num_examples"] == 10
         assert req.benchmarks[0].parameters["tokenizer"] == "my-tok"
 
     def test_run_json_output(
@@ -824,6 +853,7 @@ class TestEvalHelp:
         assert result.exit_code == 0
         assert "--config" in result.output
         assert "--model-url" in result.output
+        assert "--show-request" in result.output
         assert "--wait" in result.output
 
     def test_eval_status_help(self, runner: CliRunner) -> None:
