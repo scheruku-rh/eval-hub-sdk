@@ -566,7 +566,7 @@ class PrimaryScore(BaseModel):
 class PassCriteria(BaseModel):
     """Pass/fail criteria for a benchmark."""
 
-    threshold: float | None = Field(None, description="Threshold value for passing")
+    threshold: float = Field(..., description="Threshold value for passing")
 
 
 class Benchmark(BaseModel):
